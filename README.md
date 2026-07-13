@@ -2,6 +2,21 @@
 
 Simple DMX test tool for Pi Pico or other RP2040-based microcontroller boards
 
+This tool allows you to use your PC and a command line to set various channels in a DMX universe to desired values.
+Here is what the user menu looks like:
+
+```
+Commands:
+  help                         Show this command list
+  set_chan <channel> <value>   Set channel 1..512 to 0..255
+  get_chan <channel>           Read channel 1..512
+  set_all <value>              Set all channels to 0..255
+  set_rgb <first> <r> <g> <b>  Set three consecutive channels
+  blackout                     Set all channels to zero
+  status                       Show DMX transmitter statistics
+```
+
+
 # Connections
 
 GPIO 0 : UART TXD (output from RP2040), connected to input of RS-485 transceiver

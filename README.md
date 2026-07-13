@@ -81,6 +81,15 @@ Core 1:
 
 Every 25 milliseconds, Core 1 copies the shared SMX Universe into a local transmit buffer and then calls `dmx.write()`. This ensures that each transmitted DMX frame is internally consistent, even if Core 0 is simultaneously processing user commands and modifying the shared universe.
 
+## Program Flow
+
+1. Core 0 initialises the hardware and starts Core 1.
+2. Core 1 begins transmitting the DMX universe at 40 Hz.
+3. Core 0 waits for user input.
+4. When a command is entered, Core 0 validates it and updates the shared DMX universe.
+5. On the next 25 ms transmission interval, Core 1 copies the updated universe into its local transmit buffer and transmits it.
+6. The process repeats indefinitely.
+
 ## Key Source Functions
 
 ### `main()`

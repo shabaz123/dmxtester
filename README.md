@@ -10,6 +10,8 @@ GPIO 1 : UART RXD (input for RP2040), currently unused
 
 GPIO 2 : Driver Enable, connected to both the DE pin and the *RE pin of the RS-485 transceiver
 
+GPIO 12: Connect this to an LED (via a suitable resistor). The LED simply lights up to indicate if the firmware is running, but it may be used for other purposes in the future.
+
 # Building the Code
 
 ## Pre-requisites:

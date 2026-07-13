@@ -2,7 +2,9 @@
 
 Simple DMX test tool for Pi Pico or other RP2040-based microcontroller boards
 
-This tool allows you to use your PC and a command line to set various channels in a DMX universe to desired values.
+This software implements a DMX512 transmitter. It continuously outputs a DMX universe (i.e. 512 channels) at **40 Hz** while providing an interactive serial command interface.
+
+It allows you to use your PC and a command line to set various channels in a DMX universe to desired values.
 Here is what the user menu looks like:
 
 ```
@@ -55,8 +57,6 @@ If you're using Windows, use Device Manager to see what COM port has appeared. C
 Press Enter to see a menu appear on the serial terminal. The commands are self-explanatory.
 
 # Software Overview
-
-This software implements a DMX512 transmitter for the Raspberry Pi Pico (RP2040). It continuously outputs a DMX universe (i.e. 512 channels) at **40 Hz** while providing an interactive serial command interface.
 
 The application uses both RP2040 cores:
 

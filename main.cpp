@@ -1,12 +1,13 @@
 /************************************************************************
- * dmxtester
+  * dmxtester
  * rev 1 - July 2026 - shabaz
  *
  * Core 0: USB/serial command-line interface
  * Core 1: DMX transmitter, fixed at 40 Hz (one frame every 25 ms)
  *
- * Hardware connections are unchanged from the original program:
+ * Hardware connections:
  *   GPIO 0  - DMX UART/PIO output
+ *   GPIO 1  - DMX UART/PIO input (not used)
  *   GPIO 2  - RS-485 transmit/receive direction control
  *   GPIO 12 - status LED
  ************************************************************************/
@@ -46,7 +47,7 @@ static volatile uint32_t missed_deadlines = 0;
 // Utility functions
 // ---------------------------------------------------------------------
 static void print_title() {
-    printf("\nDMX-Tester\n");
+    printf("\nEasyDMX 40 Hz controller\n");
     printf("Built %s %s\n", __DATE__, __TIME__);
     printf("DMX: %u channels, %u frames/second\n\n",
            static_cast<unsigned>(DMX_CHANNEL_COUNT),
@@ -62,6 +63,7 @@ static void print_help() {
     printf("  set_rgb <first> <r> <g> <b>  Set three consecutive channels\n");
     printf("  blackout                     Set all channels to zero\n");
     printf("  status                       Show DMX transmitter statistics\n");
+    printf("  $<command>                   Machine mode: OK/ERR response only\n");
     printf("\nExamples:\n");
     printf("  set_chan 1 255\n");
     printf("  set_all 128\n");
@@ -158,7 +160,32 @@ static void dmx_core() {
 // ---------------------------------------------------------------------
 // Core 0: command parser
 // ---------------------------------------------------------------------
-static void process_command(char *line) {
+enum class CommandResult {
+    Ok,
+    UnknownCommand,
+    BadParameters,
+    OutOfRange
+};
+
+static void machine_reply(CommandResult result) {
+    switch (result) {
+        case CommandResult::Ok:
+            printf("OK\r\n");
+            break;
+        case CommandResult::UnknownCommand:
+            printf("ERR COMMAND\r\n");
+            break;
+        case CommandResult::BadParameters:
+            printf("ERR PARAMS\r\n");
+            break;
+        case CommandResult::OutOfRange:
+            printf("ERR RANGE\r\n");
+            break;
+    }
+    fflush(stdout);
+}
+
+static CommandResult process_command(char *line, bool machine_mode) {
     constexpr int MAX_ARGUMENTS = 5;
     char *argv[MAX_ARGUMENTS] = {nullptr};
     int argc = 0;
@@ -169,106 +196,130 @@ static void process_command(char *line) {
         token = strtok(nullptr, " \t\r\n");
     }
 
+    // A line containing only '$' is a machine-mode connection test.
     if (argc == 0) {
-        return;
+        return CommandResult::Ok;
     }
 
     if (strcmp(argv[0], "help") == 0 || strcmp(argv[0], "?") == 0) {
         if (argc != 1) {
-            printf("Usage: help\n");
-            return;
+            if (!machine_mode) printf("Usage: help\n");
+            return CommandResult::BadParameters;
         }
-        print_help();
-        return;
+        if (!machine_mode) print_help();
+        return CommandResult::Ok;
     }
 
     if (strcmp(argv[0], "set_chan") == 0) {
+        if (argc != 3) {
+            if (!machine_mode) printf("Usage: set_chan <1..512> <0..255>\n");
+            return CommandResult::BadParameters;
+        }
         int channel = 0;
         int value = 0;
-        if (argc != 3 ||
-            !parse_integer(argv[1], 1, DMX_CHANNEL_COUNT, &channel) ||
+        if (!parse_integer(argv[1], 1, DMX_CHANNEL_COUNT, &channel) ||
             !parse_integer(argv[2], 0, 255, &value)) {
-            printf("Usage: set_chan <1..512> <0..255>\n");
-            return;
+            if (!machine_mode) printf("Channel must be 1..512 and value 0..255\n");
+            return CommandResult::OutOfRange;
         }
-
-        set_channel(static_cast<unsigned>(channel),
-                    static_cast<uint8_t>(value));
-        printf("Channel %d = %d\n", channel, value);
-        return;
+        set_channel(static_cast<unsigned>(channel), static_cast<uint8_t>(value));
+        if (!machine_mode) printf("Channel %d = %d\n", channel, value);
+        return CommandResult::Ok;
     }
 
     if (strcmp(argv[0], "get_chan") == 0) {
-        int channel = 0;
-        if (argc != 2 ||
-            !parse_integer(argv[1], 1, DMX_CHANNEL_COUNT, &channel)) {
-            printf("Usage: get_chan <1..512>\n");
-            return;
+        if (argc != 2) {
+            if (!machine_mode) printf("Usage: get_chan <1..512>\n");
+            return CommandResult::BadParameters;
         }
-
-        printf("Channel %d = %u\n", channel,
-               static_cast<unsigned>(get_channel(channel)));
-        return;
+        int channel = 0;
+        if (!parse_integer(argv[1], 1, DMX_CHANNEL_COUNT, &channel)) {
+            if (!machine_mode) printf("Channel must be 1..512\n");
+            return CommandResult::OutOfRange;
+        }
+        const unsigned value = static_cast<unsigned>(get_channel(channel));
+        if (machine_mode) {
+            printf("OK %u\r\n", value);
+            fflush(stdout);
+        } else {
+            printf("Channel %d = %u\n", channel, value);
+        }
+        // get_chan emits its own machine response because it returns data.
+        return CommandResult::Ok;
     }
 
     if (strcmp(argv[0], "set_all") == 0) {
-        int value = 0;
-        if (argc != 2 || !parse_integer(argv[1], 0, 255, &value)) {
-            printf("Usage: set_all <0..255>\n");
-            return;
+        if (argc != 2) {
+            if (!machine_mode) printf("Usage: set_all <0..255>\n");
+            return CommandResult::BadParameters;
         }
-
+        int value = 0;
+        if (!parse_integer(argv[1], 0, 255, &value)) {
+            if (!machine_mode) printf("Value must be 0..255\n");
+            return CommandResult::OutOfRange;
+        }
         set_all_channels(static_cast<uint8_t>(value));
-        printf("All channels = %d\n", value);
-        return;
+        if (!machine_mode) printf("All channels = %d\n", value);
+        return CommandResult::Ok;
     }
 
     if (strcmp(argv[0], "set_rgb") == 0) {
-        int first = 0;
-        int red = 0;
-        int green = 0;
-        int blue = 0;
-
-        if (argc != 5 ||
-            !parse_integer(argv[1], 1, DMX_CHANNEL_COUNT - 2, &first) ||
+        if (argc != 5) {
+            if (!machine_mode) printf("Usage: set_rgb <first channel 1..510> <r> <g> <b>\n");
+            return CommandResult::BadParameters;
+        }
+        int first = 0, red = 0, green = 0, blue = 0;
+        if (!parse_integer(argv[1], 1, DMX_CHANNEL_COUNT - 2, &first) ||
             !parse_integer(argv[2], 0, 255, &red) ||
             !parse_integer(argv[3], 0, 255, &green) ||
             !parse_integer(argv[4], 0, 255, &blue)) {
-            printf("Usage: set_rgb <first channel 1..510> <r> <g> <b>\n");
-            return;
+            if (!machine_mode) printf("First channel must be 1..510; RGB values 0..255\n");
+            return CommandResult::OutOfRange;
         }
-
         set_rgb(static_cast<unsigned>(first), static_cast<uint8_t>(red),
                 static_cast<uint8_t>(green), static_cast<uint8_t>(blue));
-        printf("Channels %d..%d = %d, %d, %d\n", first, first + 2, red,
-               green, blue);
-        return;
+        if (!machine_mode) {
+            printf("Channels %d..%d = %d, %d, %d\n", first, first + 2,
+                   red, green, blue);
+        }
+        return CommandResult::Ok;
     }
 
     if (strcmp(argv[0], "blackout") == 0) {
         if (argc != 1) {
-            printf("Usage: blackout\n");
-            return;
+            if (!machine_mode) printf("Usage: blackout\n");
+            return CommandResult::BadParameters;
         }
         set_all_channels(0);
-        printf("Blackout enabled\n");
-        return;
+        if (!machine_mode) printf("Blackout enabled\n");
+        return CommandResult::Ok;
     }
 
     if (strcmp(argv[0], "status") == 0) {
         if (argc != 1) {
-            printf("Usage: status\n");
-            return;
+            if (!machine_mode) printf("Usage: status\n");
+            return CommandResult::BadParameters;
         }
-        printf("Frames sent: %lu, missed deadlines: %lu, rate: %u Hz\n",
-               static_cast<unsigned long>(frames_sent),
-               static_cast<unsigned long>(missed_deadlines),
-               static_cast<unsigned>(DMX_FRAME_RATE_HZ));
-        return;
+        if (machine_mode) {
+            printf("OK %lu %lu %u\r\n",
+                   static_cast<unsigned long>(frames_sent),
+                   static_cast<unsigned long>(missed_deadlines),
+                   static_cast<unsigned>(DMX_FRAME_RATE_HZ));
+            fflush(stdout);
+        } else {
+            printf("Frames sent: %lu, missed deadlines: %lu, rate: %u Hz\n",
+                   static_cast<unsigned long>(frames_sent),
+                   static_cast<unsigned long>(missed_deadlines),
+                   static_cast<unsigned>(DMX_FRAME_RATE_HZ));
+        }
+        return CommandResult::Ok;
     }
 
-    printf("Unknown command: %s\n", argv[0]);
-    printf("Type 'help' for a command list.\n");
+    if (!machine_mode) {
+        printf("Unknown command: %s\n", argv[0]);
+        printf("Type 'help' for a command list.\n");
+    }
+    return CommandResult::UnknownCommand;
 }
 
 // ---------------------------------------------------------------------
@@ -302,6 +353,7 @@ struct LineEditor {
     } escape_state = EscapeState::None;
 
     bool ignore_next_lf = false;
+    bool machine_mode = false;
 };
 
 static void redraw_line(const LineEditor &editor) {
@@ -432,58 +484,52 @@ static void erase_character_before_cursor(LineEditor &editor) {
 // Reads and edits one command line using ANSI cursor-key sequences commonly
 // emitted by USB serial terminals: ESC [ A/B/C/D for up/down/right/left.
 static bool read_command_line(LineEditor &editor, char *completed_line,
-                              size_t completed_size) {
+                              size_t completed_size,
+                              bool *completed_machine_mode) {
     const int c = getchar_timeout_us(1000);
     if (c == PICO_ERROR_TIMEOUT) {
         return false;
     }
 
-    // Decode a three-byte ANSI cursor-key sequence.
-    if (editor.escape_state == LineEditor::EscapeState::Escape) {
-        editor.escape_state =
-            (c == '[') ? LineEditor::EscapeState::Csi
-                       : LineEditor::EscapeState::None;
-        return false;
-    }
-
-    if (editor.escape_state == LineEditor::EscapeState::Csi) {
-        editor.escape_state = LineEditor::EscapeState::None;
-        switch (c) {
-            case 'A':
-                history_up(editor);
-                break;
-            case 'B':
-                history_down(editor);
-                break;
-            case 'C':
-                if (editor.cursor < editor.length) {
-                    ++editor.cursor;
-                    printf("\x1b[C");
-                } else {
-                    putchar('\a');
-                }
-                break;
-            case 'D':
-                if (editor.cursor > 0) {
-                    --editor.cursor;
-                    printf("\x1b[D");
-                } else {
-                    putchar('\a');
-                }
-                break;
-            default:
-                break;
+    // Machine commands are deliberately plain lines. Do not interpret cursor
+    // keys or echo any received characters after a leading '$'.
+    if (!editor.machine_mode) {
+        if (editor.escape_state == LineEditor::EscapeState::Escape) {
+            editor.escape_state =
+                (c == '[') ? LineEditor::EscapeState::Csi
+                           : LineEditor::EscapeState::None;
+            return false;
         }
-        fflush(stdout);
-        return false;
+
+        if (editor.escape_state == LineEditor::EscapeState::Csi) {
+            editor.escape_state = LineEditor::EscapeState::None;
+            switch (c) {
+                case 'A': history_up(editor); break;
+                case 'B': history_down(editor); break;
+                case 'C':
+                    if (editor.cursor < editor.length) {
+                        ++editor.cursor;
+                        printf("\x1b[C");
+                    } else putchar('\a');
+                    break;
+                case 'D':
+                    if (editor.cursor > 0) {
+                        --editor.cursor;
+                        printf("\x1b[D");
+                    } else putchar('\a');
+                    break;
+                default: break;
+            }
+            fflush(stdout);
+            return false;
+        }
+
+        if (c == 0x1b) {
+            editor.escape_state = LineEditor::EscapeState::Escape;
+            return false;
+        }
     }
 
-    if (c == 0x1b) {
-        editor.escape_state = LineEditor::EscapeState::Escape;
-        return false;
-    }
-
-    // Accept CR, LF, or CR/LF without producing a second empty command.
     if (c == '\n' && editor.ignore_next_lf) {
         editor.ignore_next_lf = false;
         return false;
@@ -491,15 +537,15 @@ static bool read_command_line(LineEditor &editor, char *completed_line,
     editor.ignore_next_lf = false;
 
     if (c == '\r' || c == '\n') {
-        if (c == '\r') {
-            editor.ignore_next_lf = true;
-        }
+        if (c == '\r') editor.ignore_next_lf = true;
 
-        printf("\r\n");
+        if (!editor.machine_mode) printf("\r\n");
         editor.line[editor.length] = '\0';
         strncpy(completed_line, editor.line, completed_size - 1);
         completed_line[completed_size - 1] = '\0';
-        add_history(editor, completed_line);
+        *completed_machine_mode = editor.machine_mode;
+
+        if (!editor.machine_mode) add_history(editor, completed_line);
 
         editor.line[0] = '\0';
         editor.length = 0;
@@ -507,18 +553,40 @@ static bool read_command_line(LineEditor &editor, char *completed_line,
         editor.history_offset = -1;
         editor.saved_line[0] = '\0';
         editor.saved_length = 0;
+        editor.machine_mode = false;
         return true;
     }
 
+    // A '$' is a protocol marker only when it is the first character.
+    if (!editor.machine_mode && editor.length == 0 && c == '$') {
+        editor.machine_mode = true;
+        return false;
+    }
+
     if (c == '\b' || c == 0x7f) {
-        erase_character_before_cursor(editor);
+        if (editor.machine_mode) {
+            if (editor.length > 0) {
+                --editor.length;
+                editor.cursor = editor.length;
+                editor.line[editor.length] = '\0';
+            }
+        } else {
+            erase_character_before_cursor(editor);
+        }
         return false;
     }
 
     if (c >= 0x20 && c <= 0x7e) {
-        // Once a recalled command is changed, it becomes a new editable line.
-        editor.history_offset = -1;
-        insert_character(editor, static_cast<char>(c));
+        if (editor.machine_mode) {
+            if (editor.length < sizeof(editor.line) - 1) {
+                editor.line[editor.length++] = static_cast<char>(c);
+                editor.line[editor.length] = '\0';
+                editor.cursor = editor.length;
+            }
+        } else {
+            editor.history_offset = -1;
+            insert_character(editor, static_cast<char>(c));
+        }
     }
 
     return false;
@@ -548,14 +616,28 @@ int main() {
     fflush(stdout);
 
     while (true) {
-        if (!read_command_line(editor, line, sizeof(line))) {
+        bool machine_mode = false;
+        if (!read_command_line(editor, line, sizeof(line), &machine_mode)) {
             tight_loop_contents();
             continue;
         }
 
-        process_command(line);
-        // gpio_xor_mask(1u << LED_PIN); // LED toggle
-        printf("%s", COMMAND_PROMPT);
-        fflush(stdout);
+        const CommandResult result = process_command(line, machine_mode);
+        // gpio_xor_mask(1u << LED_PIN); // toggle the LED
+
+        // get_chan and status include returned data and therefore generate
+        // their own machine-mode OK response.
+        const bool command_has_machine_data =
+            machine_mode &&
+            (strncmp(line, "get_chan", 8) == 0 ||
+             strncmp(line, "status", 6) == 0) &&
+            result == CommandResult::Ok;
+
+        if (machine_mode) {
+            if (!command_has_machine_data) machine_reply(result);
+        } else {
+            printf("%s", COMMAND_PROMPT);
+            fflush(stdout);
+        }
     }
 }

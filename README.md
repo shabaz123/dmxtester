@@ -54,5 +54,100 @@ If you're using Windows, use Device Manager to see what COM port has appeared. C
 
 Press Enter to see a menu appear on the serial terminal. The commands are self-explanatory.
 
+# Software Overview
+
+This software implements a DMX512 transmitter for the Raspberry Pi Pico (RP2040). It continuously outputs a DMX universe (i.e. 512 channels) at **40 Hz** while providing an interactive serial command interface.
+
+The application uses both RP2040 cores:
+
+| Core | Responsibility |
+|------|----------------|
+| Core 0 | User interface, command parsing, line editing, history, and updating the DMX universe |
+| Core 1 | Continuous 40 Hz DMX transmission |
+
+Separating these tasks ensures USB serial activity cannot disturb DMX timing.
+
+## Architecture
+
+```text
+The software uses an array to store the 512 bytes used for the entire DMX universe. 
+
+Core 0: 
+USB Terminal --> Line Editor --> Command Parser --> DMX Universe Shared Memory
+
+Core 1: 
+40 Hz DMX Task --> Copy DMX Universe Shared Memory --> Transmit Buffer -> dmx.write()
+```
+
+Every 25 milliseconds, Core 1 copies the shared SMX Universe into a local transmit buffer and then calls `dmx.write()`. This ensures that each transmitted DMX frame is internally consistent, even if Core 0 is simultaneously processing user commands and modifying the shared universe.
+
+## Key Source Functions
+
+### `main()`
+Initialises stdio, GPIO, the DMX driver, launches Core 1, displays the prompt, and repeatedly accepts commands.
+
+### `core1_main()`
+Runs only on Core 1. Maintains the 40 Hz schedule, copies the DMX universe, calls `dmx.write()`, waits for transmission to finish, and repeats.
+
+### `line_editor()`
+Provides interactive command editing:
+- Left/right cursor movement
+- Character insertion
+- Backspace/Delete
+- Up/down command history
+- Editing of recalled commands
+
+History depth is controlled by:
+
+```cpp
+#define COMMAND_HISTORY_DEPTH 20
+```
+
+### `execute_command()`
+Parses a complete command line and dispatches commands such as:
+- help
+- status
+- set_chan
+- get_chan
+- set_all
+- set_rgb
+- blackout
+
+### `set_channel()`
+Validates channel and value ranges before updating one DMX channel.
+
+### `set_all_channels()`
+Writes the same value to every channel.
+
+### `set_rgb()`
+Convenience routine that writes three consecutive channels for RGB fixtures.
+
+### `print_help()`
+Displays the available commands.
+
+## Thread Safety
+
+The DMX universe is shared by both cores.
+
+Core 0 enters a critical section whenever it modifies the universe.
+
+Core 1 enters the same critical section only while copying the universe into its transmit buffer, keeping lock times extremely short.
+
+## Design Decisions
+
+- Core separation keeps DMX timing independent of terminal activity.
+- A local transmit buffer ensures complete frames are transmitted.
+- Command parsing is independent of the DMX transport layer, making new commands easy to add.
+
+## Extending the Software
+
+To add a new command:
+
+1. Add the command to `print_help()`.
+2. Extend `execute_command()`.
+3. Implement any helper function required.
+
+The Core 1 transmission task normally does not need modification.
+
 
 
